@@ -50,15 +50,16 @@ func main() {
 	//myNode := flag.String("node", "http://127.0.0.1:8000", "Valid node for initial transactions")
 	//g_faucet = flag.String("faucet", "http://127.0.0.1:9500", "faucet url")
 	g_faucet = flag.String("faucet", "http://192.168.178.35:9500", "faucet url")
+	sequencer := flag.String("sequ", "6393b6781206a652070e78d1391bc467e9d9704e9aa59ec7f7131f329d662dcc", "tag along sequencer")
 
 	nodeAPIURL := myNode
 
 	flag.Parse()
 
-	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes, false)
+	nodes := getNodes(getRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes, false)
 	fmt.Printf("spamming with %d nodes\n", len(nodes))
 
-	InitLedger(GetClient(*nodeAPIURL))
+	InitLedger(getClient(*nodeAPIURL))
 
 	cfg := spammerConfig{
 		outputAmount:    1000,
@@ -71,7 +72,7 @@ func main() {
 		//target            ledger.Accountable
 		finalitySlots: 3,
 	}
-	cfg.tagAlongSequencer, _ = ledger.ChainIDFromHexString("6393b6781206a652070e78d1391bc467e9d9704e9aa59ec7f7131f329d662dcc")
+	cfg.tagAlongSequencer, _ = ledger.ChainIDFromHexString(*sequencer)
 
 	var wallets []glb.WalletData
 	wallets = make([]glb.WalletData, *nbrNodes)
@@ -90,14 +91,14 @@ func main() {
 	wg.Wait()
 }
 
-func GetClient(endpoint string) *client.APIClient {
+func getClient(endpoint string) *client.APIClient {
 	var timeout []time.Duration
 	timeout = []time.Duration{time.Duration(10) * time.Second}
 	return client.NewWithGoogleDNS(endpoint, timeout...)
 }
 
-func GetRandomNode(url string, numberOfNodes int) string {
-	nodes := GetNodes(url, numberOfNodes, true)
+func getRandomNode(url string, numberOfNodes int) string {
+	nodes := getNodes(url, numberOfNodes, true)
 
 	if nodes == nil {
 		return ""
@@ -105,7 +106,7 @@ func GetRandomNode(url string, numberOfNodes int) string {
 	return nodes[rand.Intn(len(nodes))]
 }
 
-func GetNodes(url string, numberOfNodes int, noCheck bool) []string {
+func getNodes(url string, numberOfNodes int, noCheck bool) []string {
 	var nodes []string
 	nodes = append(nodes, url)
 	if numberOfNodes == 1 {
@@ -113,20 +114,20 @@ func GetNodes(url string, numberOfNodes int, noCheck bool) []string {
 	}
 	count := 0
 
-	client := GetClient(url)
+	client := getClient(url)
 	peersInfo, err := client.GetPeersInfo()
-	AssertNoError(err)
+	glb.AssertNoError(err)
 
 	for _, node := range peersInfo.Peers {
 		i := 0
 		for _, maddr := range node.MultiAddresses {
 			fmt.Printf("Checking url = %v\n", maddr)
 			url := "http://" + strings.Split(maddr, "/")[2] + ":8000"
-			clt := GetClient(url)
+			clt := getClient(url)
 			status, err := clt.GetSyncInfo()
 			if err != nil {
 				url = "http://" + strings.Split(maddr, "/")[2] + ":8001"
-				clt := GetClient(url)
+				clt := getClient(url)
 				status, err = clt.GetSyncInfo()
 			}
 			if err == nil && status.Synced {
@@ -145,17 +146,6 @@ func GetNodes(url string, numberOfNodes int, noCheck bool) []string {
 		}
 	}
 	return nodes
-}
-
-func Fatalf(format string, args ...any) {
-	fmt.Printf("Error: "+format+"\n", args...)
-	os.Exit(1)
-}
-
-func AssertNoError(err error) {
-	if err != nil {
-		Fatalf("error: %v", err)
-	}
 }
 
 func NewWallet() (error, glb.WalletData) {
@@ -193,7 +183,7 @@ func getAccountTotal(client *client.APIClient, accountable ledger.Accountable) u
 }
 
 func getFunds(client *client.APIClient, account ledger.AddressED25519) {
-	faucet := GetClient(*g_faucet)
+	faucet := getClient(*g_faucet)
 
 	path := fmt.Sprintf("/"+"?addr=%s", account.String())
 
@@ -227,12 +217,12 @@ func getFunds(client *client.APIClient, account ledger.AddressED25519) {
 
 func InitLedger(client *client.APIClient) {
 	ledgerID, err := client.GetLedgerID()
-	AssertNoError(err)
+	glb.AssertNoError(err)
 	ledger.Init(ledgerID)
 }
 
 func InitWallet(url string, index int) (error, *glb.WalletData) {
-	client := GetClient(url)
+	client := getClient(url)
 
 	walletData := LoadWallet(seedsFile, index)
 	if walletData == nil {
@@ -256,7 +246,7 @@ func InitWallet(url string, index int) (error, *glb.WalletData) {
 
 func doSpamming(url string, cfg spammerConfig, walletData glb.WalletData) {
 
-	client := GetClient(url)
+	client := getClient(url)
 	funds := getAccountTotal(client, walletData.Account)
 	glb.Infof(" wallet funds: %d", funds)
 
@@ -393,10 +383,10 @@ func ReportTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll ti
 	startSlot := ledger.TimeNow().Slot()
 	for {
 		score, err := clt.QueryTxInclusionScore(txid, inclusionThresholdNumerator, inclusionThresholdDenominator, slotSpan)
-		AssertNoError(err)
+		glb.AssertNoError(err)
 
 		lrbid, err := ledger.TransactionIDFromHexString(score.LRBID)
-		AssertNoError(err)
+		glb.AssertNoError(err)
 
 		slotsBack := ledger.TimeNow().Slot() - lrbid.Slot()
 		glb.Infof("   weak score: %d%%, strong score: %d%%, slot span %d - %d (%d), included in LRB: %v, LRB is slots back: %d",
@@ -484,7 +474,7 @@ func LoadWallet(fileName string, index int) *glb.WalletData {
 
 	scanner := bufio.NewScanner(file)
 
-	// Read the rest of the lines into a slice
+	// Read the lines into a slice
 	var lines []string
 	i := 0
 	for scanner.Scan() {
@@ -495,7 +485,6 @@ func LoadWallet(fileName string, index int) *glb.WalletData {
 		i += 1
 	}
 
-	// Close the file and overwrite with the remaining lines
 	file.Close()
 
 	if len(lines) < (index + 1) {
@@ -510,77 +499,12 @@ func LoadWallet(fileName string, index int) *glb.WalletData {
 	}
 
 	account, err := ledger.AddressED25519FromSource(sacc)
-	AssertNoError(err)
+	glb.AssertNoError(err)
 	privKey, err := util.ED25519PrivateKeyFromHexString(spriv)
-	AssertNoError(err)
+	glb.AssertNoError(err)
 
 	return &glb.WalletData{
 		PrivateKey: privKey,
 		Account:    account,
 	}
 }
-
-// func LoadWallet(fileName string, index int) *glb.WalletData {
-
-// 	// lock the file
-// 	lock := LockFile(fileName)
-// 	if lock == nil {
-// 		fmt.Println("failed to acquire lock ")
-// 		return nil
-// 	}
-
-// 	defer lock.Unlock()
-
-// 	file, err := os.Open(fileName)
-// 	if err != nil {
-// 		return nil
-// 	}
-// 	defer file.Close()
-
-// 	scanner := bufio.NewScanner(file)
-
-// 	// Read the first line
-// 	var firstLine string
-// 	if scanner.Scan() {
-// 		firstLine = scanner.Text()
-// 	} else {
-// 		// If the file is empty or an error occurs
-// 		if err := scanner.Err(); err != nil {
-// 			return nil
-// 		}
-// 		return nil
-// 	}
-
-// 	// Read the rest of the lines into a slice
-// 	var remainingLines []string
-// 	for scanner.Scan() {
-// 		remainingLines = append(remainingLines, scanner.Text())
-// 	}
-
-// 	// Close the file and overwrite with the remaining lines
-// 	file.Close()
-
-// 	file, err = os.Create(fileName)
-// 	if err != nil {
-// 		return nil
-// 	}
-// 	defer file.Close()
-
-// 	writer := bufio.NewWriter(file)
-// 	for _, line := range remainingLines {
-// 		_, err := writer.WriteString(line + "\n")
-// 		if err != nil {
-// 			return nil
-// 		}
-// 	}
-
-// 	// Flush the buffer to ensure all data is written to the file
-// 	err = writer.Flush()
-// 	if err != nil {
-// 		return nil
-// 	}
-
-// 	// ED25519PrivateKeyFromHexString(str string) (ed25519.PrivateKey, error)
-
-// 	return firstLine
-// }
