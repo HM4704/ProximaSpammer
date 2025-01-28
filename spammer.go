@@ -59,7 +59,7 @@ func main() {
 	nodes := getNodes(getRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes, false)
 	fmt.Printf("spamming with %d nodes\n", len(nodes))
 
-	InitLedger(getClient(*nodeAPIURL))
+	initLedger(getClient(*nodeAPIURL))
 
 	cfg := spammerConfig{
 		outputAmount:    1000,
@@ -78,7 +78,7 @@ func main() {
 	wallets = make([]glb.WalletData, *nbrNodes)
 
 	for i, node := range nodes {
-		_, w := InitWallet(node, i)
+		_, w := initWallet(node, i)
 		wallets[i] = *w
 	}
 	var wg sync.WaitGroup
@@ -148,7 +148,7 @@ func getNodes(url string, numberOfNodes int, noCheck bool) []string {
 	return nodes
 }
 
-func NewWallet() (error, glb.WalletData) {
+func newWallet() (error, glb.WalletData) {
 
 	numBytes := 20
 	randomBytes := make([]byte, numBytes)
@@ -215,21 +215,21 @@ func getFunds(client *client.APIClient, account ledger.AddressED25519) {
 	}
 }
 
-func InitLedger(client *client.APIClient) {
+func initLedger(client *client.APIClient) {
 	ledgerID, err := client.GetLedgerID()
 	glb.AssertNoError(err)
 	ledger.Init(ledgerID)
 }
 
-func InitWallet(url string, index int) (error, *glb.WalletData) {
+func initWallet(url string, index int) (error, *glb.WalletData) {
 	client := getClient(url)
 
-	walletData := LoadWallet(seedsFile, index)
+	walletData := loadWallet(seedsFile, index)
 	if walletData == nil {
-		err, wd := NewWallet()
+		err, wd := newWallet()
 		if err == nil {
 			walletData = &wd
-			SaveWallet(seedsFile, *walletData)
+			saveWallet(seedsFile, *walletData)
 		} else {
 			return err, nil
 		}
@@ -295,7 +295,7 @@ func doSpamming(url string, cfg spammerConfig, walletData glb.WalletData) {
 			}
 		}
 
-		ReportTxInclusion(client, oid.TransactionID(), time.Second, ledger.Slot(cfg.finalitySlots))
+		reportTxInclusion(client, oid.TransactionID(), time.Second, ledger.Slot(cfg.finalitySlots))
 
 		txCounter += len(bundle)
 		timeSinceBeginning := time.Since(beginTime)
@@ -363,7 +363,7 @@ func prepareBundle(clt *client.APIClient, walletData glb.WalletData, cfg spammer
 
 const slotSpan = 2
 
-func ReportTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll time.Duration, maxSlots ...ledger.Slot) {
+func reportTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll time.Duration, maxSlots ...ledger.Slot) {
 	weakFinality := true //GetIsWeakFinality()
 
 	if len(maxSlots) > 0 {
@@ -412,7 +412,7 @@ func ReportTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll ti
 	}
 }
 
-func LockFile(fileName string) *fslock.Lock {
+func lockFile(fileName string) *fslock.Lock {
 	var lock *fslock.Lock = nil
 	for i := 0; i < 100; i++ {
 		lock = fslock.New(fileName)
@@ -427,10 +427,10 @@ func LockFile(fileName string) *fslock.Lock {
 	return lock
 }
 
-func SaveWallet(fileName string, wallet glb.WalletData) {
+func saveWallet(fileName string, wallet glb.WalletData) {
 
 	// lock the file
-	lock := LockFile(fileName)
+	lock := lockFile(fileName)
 	if lock == nil {
 		fmt.Println("failed to acquire lock ")
 		return
@@ -455,10 +455,10 @@ func SaveWallet(fileName string, wallet glb.WalletData) {
 	_, err = file.WriteString(seed + "\n")
 }
 
-func LoadWallet(fileName string, index int) *glb.WalletData {
+func loadWallet(fileName string, index int) *glb.WalletData {
 
 	// lock the file
-	lock := LockFile(fileName)
+	lock := lockFile(fileName)
 	if lock == nil {
 		fmt.Println("failed to acquire lock ")
 		return nil
