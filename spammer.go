@@ -21,6 +21,7 @@ import (
 	"github.com/lunfardo314/proxima/ledger/transaction"
 	"github.com/lunfardo314/proxima/proxi/glb"
 	"github.com/lunfardo314/proxima/util"
+	"github.com/lunfardo314/proxima/util/set"
 	"github.com/lunfardo314/unitrie/common"
 	"golang.org/x/crypto/blake2b"
 )
@@ -50,7 +51,7 @@ func main() {
 	//myNode := flag.String("node", "http://127.0.0.1:8000", "Valid node for initial transactions")
 	//g_faucet = flag.String("faucet", "http://127.0.0.1:9500", "faucet url")
 	g_faucet = flag.String("faucet", "http://192.168.178.35:9500", "faucet url")
-	sequencer := flag.String("sequ", "6393b6781206a652070e78d1391bc467e9d9704e9aa59ec7f7131f329d662dcc", "tag along sequencer")
+	sequencer := flag.String("sequ", "35e5c2f9bbaf07df23676cead81539e2cabb04e9a27921834e17cb99d8e6f083", "tag along sequencer")
 
 	nodeAPIURL := myNode
 
@@ -121,11 +122,12 @@ func getNodes(url string, numberOfNodes int, noCheck bool) []string {
 	for _, node := range peersInfo.Peers {
 		i := 0
 		for _, maddr := range node.MultiAddresses {
-			fmt.Printf("Checking url = %v\n", maddr)
 			url := "http://" + strings.Split(maddr, "/")[2] + ":8000"
+			fmt.Printf("Checking url = %v\n", url)
 			clt := getClient(url)
 			status, err := clt.GetSyncInfo()
 			if err != nil {
+				fmt.Println("GetSyncInfo err=%s", err.Error())
 				url = "http://" + strings.Split(maddr, "/")[2] + ":8001"
 				clt := getClient(url)
 				status, err = clt.GetSyncInfo()
@@ -295,7 +297,7 @@ func doSpamming(url string, cfg spammerConfig, walletData glb.WalletData) {
 			}
 		}
 
-		reportTxInclusion(client, oid.TransactionID(), time.Second, ledger.Slot(cfg.finalitySlots))
+		TrackTxInclusion(client, oid.TransactionID(), time.Second)
 
 		txCounter += len(bundle)
 		timeSinceBeginning := time.Since(beginTime)
@@ -361,54 +363,37 @@ func prepareBundle(clt *client.APIClient, walletData glb.WalletData, cfg spammer
 	return ret, lastOuts[0].ID
 }
 
-const slotSpan = 2
+const slotSpan = 1
 
-func reportTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll time.Duration, maxSlots ...ledger.Slot) {
-	weakFinality := true //GetIsWeakFinality()
-
-	if len(maxSlots) > 0 {
-		glb.Infof("Tracking inclusion of %s (hex=%s) for at most %d slots:", txid.String(), txid.StringHex(), maxSlots[0])
-	} else {
-		glb.Infof("Tracking inclusion of %s (hex=%s):", txid.String(), txid.StringHex())
-	}
-	inclusionThresholdNumerator, inclusionThresholdDenominator := 2, 3
-
-	fin := "strong"
-	if weakFinality {
-		fin = "weak"
-	}
-	glb.Infof("  finality criterion: %s, slot span: %d, strong inclusion threshold: %d/%d",
-		fin, slotSpan, inclusionThresholdNumerator, inclusionThresholdDenominator)
-
-	startSlot := ledger.TimeNow().Slot()
+func TrackTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll time.Duration) {
+	inclusionDepth := slotSpan //GetTargetInclusionDepth()
+	glb.Infof("tracking inclusion of the transaction %s.\ntarget inclusion depth: %d", txid.String(), inclusionDepth)
+	lrbids := set.New[ledger.TransactionID]()
+	start := time.Now()
+	last := time.Now()
 	for {
-		score, err := clt.QueryTxInclusionScore(txid, inclusionThresholdNumerator, inclusionThresholdDenominator, slotSpan)
+		lrbid, foundAtDepth, err := clt.CheckTransactionIDInLRB(txid, inclusionDepth)
 		glb.AssertNoError(err)
 
-		lrbid, err := ledger.TransactionIDFromHexString(score.LRBID)
-		glb.AssertNoError(err)
-
-		slotsBack := ledger.TimeNow().Slot() - lrbid.Slot()
-		glb.Infof("   weak score: %d%%, strong score: %d%%, slot span %d - %d (%d), included in LRB: %v, LRB is slots back: %d",
-			score.WeakScore, score.StrongScore, score.EarliestSlot, score.LatestSlot, score.LatestSlot-score.EarliestSlot+1,
-			score.IncludedInLRB, slotsBack)
-
-		if weakFinality {
-			if score.WeakScore == 100 {
-				return
+		if time.Since(last) > poll*4 || !lrbids.Contains(lrbid) {
+			lrbidStr := lrbid.StringShort()
+			// if IsVerbose() {
+			// 	lrbidStr += ", hex=" + lrbid.StringHex()
+			// }
+			since := time.Since(start) / time.Second
+			if foundAtDepth < 0 {
+				glb.Infof("%2d sec. Transaction is NOT included in the latest reliable branch (LRB) %s", since, lrbidStr)
+			} else {
+				glb.Infof("%2d sec. Transaction INCLUDED in the latest reliable branch (LRB) at depth %d: %s", since, foundAtDepth, lrbidStr)
+				if foundAtDepth == inclusionDepth {
+					glb.Infof("target inclusion depth %d has been reached", inclusionDepth)
+					return
+				}
 			}
-		} else {
-			if score.StrongScore == 100 {
-				return
-			}
+			last = time.Now()
+			lrbids.Insert(lrbid)
 		}
 		time.Sleep(poll)
-
-		slotNow := ledger.TimeNow().Slot()
-		if len(maxSlots) > 0 && maxSlots[0] < slotNow-startSlot {
-			glb.Infof("----- failed to reach finality in %d slots", maxSlots[0])
-			return
-		}
 	}
 }
 
