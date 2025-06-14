@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/juju/fslock"
+	"github.com/lunfardo314/easyfl"
 	"github.com/lunfardo314/proxima/api/client"
 	"github.com/lunfardo314/proxima/ledger"
+	"github.com/lunfardo314/proxima/ledger/base"
 	"github.com/lunfardo314/proxima/ledger/transaction"
 	"github.com/lunfardo314/proxima/proxi/glb"
 	"github.com/lunfardo314/proxima/util"
@@ -37,7 +39,7 @@ type spammerConfig struct {
 	pace              int
 	maxTransactions   int
 	maxDuration       time.Duration
-	tagAlongSequencer ledger.ChainID
+	tagAlongSequencer base.ChainID
 	tagAlongFee       uint64
 	target            ledger.Accountable
 	finalitySlots     int
@@ -51,7 +53,7 @@ func main() {
 	//myNode := flag.String("node", "http://127.0.0.1:8000", "Valid node for initial transactions")
 	//g_faucet = flag.String("faucet", "http://127.0.0.1:9500", "faucet url")
 	g_faucet = flag.String("faucet", "http://192.168.178.35:9500", "faucet url")
-	sequencer := flag.String("sequ", "35e5c2f9bbaf07df23676cead81539e2cabb04e9a27921834e17cb99d8e6f083", "tag along sequencer")
+	sequencer := flag.String("sequ", "8f9f10b59bd648f3a2abc544b53f486b63d884d2cb22d850f902955ff024b9b0", "tag along sequencer")
 
 	nodeAPIURL := myNode
 
@@ -60,7 +62,7 @@ func main() {
 	nodes := getNodes(getRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes, false)
 	fmt.Printf("spamming with %d nodes\n", len(nodes))
 
-	initLedger(getClient(*nodeAPIURL))
+	InitLedgerFromNode(getClient(*nodeAPIURL))
 
 	cfg := spammerConfig{
 		outputAmount:    1000,
@@ -73,7 +75,7 @@ func main() {
 		//target            ledger.Accountable
 		finalitySlots: 3,
 	}
-	cfg.tagAlongSequencer, _ = ledger.ChainIDFromHexString(*sequencer)
+	cfg.tagAlongSequencer, _ = base.ChainIDFromHexString(*sequencer)
 
 	var wallets []glb.WalletData
 	wallets = make([]glb.WalletData, *nbrNodes)
@@ -168,7 +170,7 @@ func newWallet() (error, glb.WalletData) {
 	priv := ed25519.NewKeyFromSeed(seed[:])
 	pub := priv.Public().(ed25519.PublicKey)
 	addr := ledger.AddressED25519FromPublicKey(pub)
-	chainId, _ := ledger.ChainIDFromBytes([]byte("6393b6781206a652070e78d1391bc467e9d9704e9aa59ec7f7131f329d662dcc"))
+	chainId, _ := base.ChainIDFromBytes([]byte("6393b6781206a652070e78d1391bc467e9d9704e9aa59ec7f7131f329d662dcc"))
 	return nil, glb.WalletData{PrivateKey: priv, Account: addr, Sequencer: &chainId}
 }
 
@@ -217,10 +219,21 @@ func getFunds(client *client.APIClient, account ledger.AddressED25519) {
 	}
 }
 
-func initLedger(client *client.APIClient) {
-	ledgerID, err := client.GetLedgerID()
+// func initLedger(client *client.APIClient) {
+// 	ledgerID, err := client.GetLedgerID()
+// 	glb.AssertNoError(err)
+// 	ledger.Init(ledgerID)
+// }
+
+func InitLedgerFromNode(client *client.APIClient) {
+	ledgerIDData, err := client.GetLedgerIdentityData()
 	glb.AssertNoError(err)
-	ledger.Init(ledgerID)
+	// pre-parse
+	fromYAML, err := easyfl.ReadLibraryFromYAML(ledgerIDData)
+	glb.AssertNoError(err)
+	glb.Infof("successfully parsed ledger definitions. Library hash = %s", fromYAML.Hash)
+
+	ledger.MustInitSingleton(ledgerIDData)
 }
 
 func initWallet(url string, index int) (error, *glb.WalletData) {
@@ -288,7 +301,7 @@ func doSpamming(url string, cfg spammerConfig, walletData glb.WalletData) {
 		for i, txBytes := range bundle {
 			err = client.SubmitTransaction(txBytes)
 			glb.AssertNoError(err)
-			txid, err := transaction.IDFromTransactionBytes(txBytes)
+			txid, err := transaction.IDFromParsedTransactionBytes(txBytes)
 			glb.AssertNoError(err)
 			if i == len(bundle)-1 {
 				glb.Verbosef("%2d: submitted %s -> tag-along", i, txid.StringShort())
@@ -305,14 +318,14 @@ func doSpamming(url string, cfg spammerConfig, walletData glb.WalletData) {
 	}
 }
 
-func maxTimestamp(outs []*ledger.OutputWithID) (ret ledger.Time) {
+func maxTimestamp(outs []*ledger.OutputWithID) (ret base.LedgerTime) {
 	for _, o := range outs {
-		ret = ledger.MaximumTime(ret, o.Timestamp())
+		ret = base.MaximumTime(ret, o.Timestamp())
 	}
 	return
 }
 
-func prepareBundle(clt *client.APIClient, walletData glb.WalletData, cfg spammerConfig) ([][]byte, ledger.OutputID) {
+func prepareBundle(clt *client.APIClient, walletData glb.WalletData, cfg spammerConfig) ([][]byte, base.OutputID) {
 	ret := make([][]byte, 0)
 	txCtx, err := clt.MakeCompactTransaction(walletData.PrivateKey, nil, 0, cfg.bundleSize*3)
 	glb.AssertNoError(err)
@@ -334,7 +347,7 @@ func prepareBundle(clt *client.APIClient, walletData glb.WalletData, cfg spammer
 		if i == numTx-1 {
 			fee = cfg.tagAlongFee
 		}
-		ts := ledger.MaximumTime(maxTimestamp(lastOuts).AddTicks(cfg.pace), ledger.TimeNow())
+		ts := base.MaximumTime(maxTimestamp(lastOuts).AddTicks(cfg.pace), ledger.TimeNow())
 		txBytes, err := client.MakeTransferTransaction(client.MakeTransferTransactionParams{
 			Inputs:        lastOuts,
 			Target:        cfg.target.AsLock(),
@@ -365,10 +378,10 @@ func prepareBundle(clt *client.APIClient, walletData glb.WalletData, cfg spammer
 
 const slotSpan = 1
 
-func TrackTxInclusion(clt *client.APIClient, txid ledger.TransactionID, poll time.Duration) {
+func TrackTxInclusion(clt *client.APIClient, txid base.TransactionID, poll time.Duration) {
 	inclusionDepth := slotSpan //GetTargetInclusionDepth()
 	glb.Infof("tracking inclusion of the transaction %s.\ntarget inclusion depth: %d", txid.String(), inclusionDepth)
-	lrbids := set.New[ledger.TransactionID]()
+	lrbids := set.New[base.TransactionID]()
 	start := time.Now()
 	last := time.Now()
 	for {
